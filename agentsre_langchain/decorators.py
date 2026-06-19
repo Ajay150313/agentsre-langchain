@@ -1,115 +1,210 @@
-"""Decorators for monitoring LangChain agent execution."""
+"""
+Decorators for monitoring LangChain agent execution.
 
+Two decorators are provided — one synchronous, one async — so they can wrap
+both standard callables and async LangChain chains without blocking the event
+loop.
+
+Usage
+-----
+Sync agent::
+
+    from agentsre_langchain import monitor_agent
+
+    collector = MetricsCollector(tie_baseline_calls=3.0)
+
+    @monitor_agent(agent_id="payment-router", task_class="payments",
+                   collector=collector)
+    def run_agent(query: str) -> dict:
+        return executor.invoke({"input": query})
+
+Async agent::
+
+    from agentsre_langchain import async_monitor_agent
+
+    @async_monitor_agent(agent_id="alert-triage", task_class="triage",
+                         collector=collector)
+    async def run_async_agent(query: str) -> dict:
+        return await chain.ainvoke({"input": query})
+
+The collector instance is passed explicitly (not a module-level global) so
+multiple agents, test suites, and concurrent workers can each maintain
+isolated metric state.
+"""
+
+from __future__ import annotations
+
+import asyncio
 import functools
 import time
 import logging
 from typing import Any, Callable, Optional
 
-from .config import MonitorConfig
-from .collector import MetricsCollector, ExecutionMetrics
+from .collector import ExecutionMetrics, MetricsCollector
 
 logger = logging.getLogger(__name__)
 
-# Global collector instance
-_global_collector = MetricsCollector()
 
+# ---------------------------------------------------------------------------
+# Synchronous decorator
+# ---------------------------------------------------------------------------
 
 def monitor_agent(
-    agent_id: str,
+    agent_id:   str,
     task_class: str,
-    config: Optional[MonitorConfig] = None
+    collector:  MetricsCollector,
+    *,
+    verbose:    bool = False,
 ) -> Callable:
     """
-    Decorator to monitor LangChain agent execution.
-    
-    Args:
-        agent_id: Unique identifier for the agent
-        task_class: Classification of the task (e.g., "payment_routing")
-        config: MonitorConfig instance for customization
-    
-    Returns:
-        Decorated function that tracks metrics
-    
-    Example:
-        @monitor_agent(agent_id="payment-router", task_class="payments")
-        def run_agent(query: str):
-            executor = AgentExecutor(agent=agent, tools=tools)
-            return executor.invoke({"input": query})
+    Decorator that records SRE metrics for a synchronous LangChain agent.
+
+    Parameters
+    ----------
+    agent_id   : Unique identifier for this agent instance.
+    task_class : Task category label (e.g. "payments", "alert_triage").
+    collector  : MetricsCollector instance to record into.
+    verbose    : Log SLI summary after each execution.
+
+    The decorated function must return a dict (standard LangChain pattern).
+    If it returns a non-dict the decorator still records success/failure but
+    leaves token/cost metrics as zero.
     """
-    
-    if config is None:
-        config = MonitorConfig()
-    
+
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
-        def wrapper(*args, **kwargs) -> Any:
-            start_time = time.time()
-            
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            start = time.perf_counter()
             try:
-                # Execute the agent
                 result = func(*args, **kwargs)
-                execution_time_ms = (time.time() - start_time) * 1000
-                
-                # Extract metrics from result
-                confidence = result.get("confidence", 0.9) if isinstance(result, dict) else 0.9
-                tool_calls = result.get("tool_calls", 1) if isinstance(result, dict) else 1
-                input_tokens = result.get("input_tokens", 0) if isinstance(result, dict) else 0
-                output_tokens = result.get("output_tokens", 0) if isinstance(result, dict) else 0
-                cost = result.get("cost", 0.0) if isinstance(result, dict) else 0.0
-                
-                # Create metrics
-                metrics = ExecutionMetrics(
-                    agent_id=agent_id,
+                elapsed_ms = (time.perf_counter() - start) * 1000
+
+                metrics = _extract_metrics(
+                    result, agent_id=agent_id,
                     task_class=task_class,
-                    tool_calls=tool_calls,
                     success=True,
-                    confidence=confidence,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cost=cost,
-                    execution_time_ms=execution_time_ms,
+                    elapsed_ms=elapsed_ms,
                 )
-                
-                # Record metrics
-                _global_collector.record(metrics)
-                
-                if config.verbose:
+                collector.record(metrics)
+
+                if verbose:
+                    summary = collector.get_summary(task_class)
                     logger.info(
-                        f"Agent {agent_id} completed: "
-                        f"DQR={_global_collector.get_dqr(task_class):.1f}%, "
-                        f"TIE={_global_collector.get_tie(task_class):.2f}x, "
-                        f"HER={_global_collector.get_her(task_class):.1f}%"
+                        "Agent %s completed | DQR=%.1f%% TIE=%.2f HER=%.1f%%",
+                        agent_id,
+                        summary.get("dqr", 0.0),
+                        summary.get("tie", 0.0),
+                        summary.get("her", 0.0),
                     )
-                
+
                 return result
-            
-            except Exception as e:
-                execution_time_ms = (time.time() - start_time) * 1000
-                
-                # Record failed execution
-                metrics = ExecutionMetrics(
+
+            except Exception:
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                collector.record(ExecutionMetrics(
                     agent_id=agent_id,
                     task_class=task_class,
-                    tool_calls=0,
                     success=False,
-                    confidence=0.0,
-                    execution_time_ms=execution_time_ms,
-                )
-                
-                _global_collector.record(metrics)
-                logger.error(f"Agent {agent_id} failed: {str(e)}")
+                    execution_time_ms=elapsed_ms,
+                ))
+                logger.error("Agent %s failed after %.0f ms", agent_id, elapsed_ms)
                 raise
-        
+
         return wrapper
-    
+
     return decorator
 
 
-def get_metrics(task_class: str) -> dict:
-    """Get metrics summary for a task class."""
-    return _global_collector.get_summary(task_class)
+# ---------------------------------------------------------------------------
+# Async decorator
+# ---------------------------------------------------------------------------
+
+def async_monitor_agent(
+    agent_id:   str,
+    task_class: str,
+    collector:  MetricsCollector,
+    *,
+    verbose:    bool = False,
+) -> Callable:
+    """
+    Decorator that records SRE metrics for an *async* LangChain agent.
+
+    Drop-in replacement for ``monitor_agent`` when wrapping coroutines.
+    Uses ``time.perf_counter()`` (not asyncio.sleep) so it measures wall
+    clock time without blocking the event loop.
+    """
+
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            start = time.perf_counter()
+            try:
+                result = await func(*args, **kwargs)
+                elapsed_ms = (time.perf_counter() - start) * 1000
+
+                metrics = _extract_metrics(
+                    result, agent_id=agent_id,
+                    task_class=task_class,
+                    success=True,
+                    elapsed_ms=elapsed_ms,
+                )
+                collector.record(metrics)
+
+                if verbose:
+                    summary = collector.get_summary(task_class)
+                    logger.info(
+                        "Async agent %s completed | DQR=%.1f%% TIE=%.2f HER=%.1f%%",
+                        agent_id,
+                        summary.get("dqr", 0.0),
+                        summary.get("tie", 0.0),
+                        summary.get("her", 0.0),
+                    )
+
+                return result
+
+            except Exception:
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                collector.record(ExecutionMetrics(
+                    agent_id=agent_id,
+                    task_class=task_class,
+                    success=False,
+                    execution_time_ms=elapsed_ms,
+                ))
+                logger.error("Async agent %s failed after %.0f ms", agent_id, elapsed_ms)
+                raise
+
+        return wrapper
+
+    return decorator
 
 
-def get_collector() -> MetricsCollector:
-    """Get the global metrics collector instance."""
-    return _global_collector
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _extract_metrics(
+    result:     Any,
+    agent_id:   str,
+    task_class: str,
+    success:    bool,
+    elapsed_ms: float,
+) -> ExecutionMetrics:
+    """Extract ExecutionMetrics from a LangChain result dict (best-effort)."""
+    if not isinstance(result, dict):
+        return ExecutionMetrics(
+            agent_id=agent_id,
+            task_class=task_class,
+            success=success,
+            execution_time_ms=elapsed_ms,
+        )
+    return ExecutionMetrics(
+        agent_id=agent_id,
+        task_class=task_class,
+        tool_calls=result.get("tool_calls", 1),
+        success=success,
+        confidence=float(result.get("confidence", 0.9)),
+        input_tokens=result.get("input_tokens", 0),
+        output_tokens=result.get("output_tokens", 0),
+        cost=float(result.get("cost", 0.0)),
+        execution_time_ms=elapsed_ms,
+    )
