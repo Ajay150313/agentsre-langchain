@@ -12,8 +12,11 @@ __author__ = "Ajay Devineni"
 
 from .decorators import monitor_agent
 from .config import MonitorConfig
+from .idempotency import DuplicateToolCallGuard, ToolCallDecision
 
 __all__ = [
     "monitor_agent",
     "MonitorConfig",
+    "DuplicateToolCallGuard",
+    "ToolCallDecision",
 ]

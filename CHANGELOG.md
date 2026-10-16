@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `DuplicateToolCallGuard` — windowed block/count for identical tool starts
+
 ## [0.1.0] - 2026-05-26
 
 ### Added
