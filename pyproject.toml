@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentsre-langchain"
-version = "0.1.0"
+version = "0.1.1"
 description = "Semantic SLI monitoring for LangChain agents"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
-    {name = "Ajay Devineni", email = "ajay@candescent.ai"}
+    {name = "Ajay Devineni"}
 ]
 keywords = ["sre", "monitoring", "langchain", "agents", "semantic", "reliability"]
 classifiers = [
