@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.1]
+
+### Fixed
+- README and examples used `@monitor_agent(..., config=MonitorConfig(...))` and
+  `get_metrics()`, which the 0.1.0 decorator did not support. `collector` is now optional
+  (defaults to a shared collector), `config=` is accepted, and `get_metrics()` is exported.
+- Removed a personal employer email address from package metadata.
+
+### Added
+- `async_monitor_agent`, `MetricsCollector`, `ExecutionMetrics`, `get_default_collector`,
+  `reset_default_collector` exported from the package root.
+- Decorator tests (sync, async, failure path, default collector, isolation).
+
 ## Unreleased
 
 ### Added

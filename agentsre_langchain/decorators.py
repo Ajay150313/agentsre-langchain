@@ -41,8 +41,30 @@ import logging
 from typing import Any, Callable, Optional
 
 from .collector import ExecutionMetrics, MetricsCollector
+from .config import MonitorConfig
 
 logger = logging.getLogger(__name__)
+
+_default_collector: Optional[MetricsCollector] = None
+
+
+def get_default_collector() -> MetricsCollector:
+    """Process-wide collector used when no ``collector`` is passed to a decorator."""
+    global _default_collector
+    if _default_collector is None:
+        _default_collector = MetricsCollector()
+    return _default_collector
+
+
+def reset_default_collector() -> None:
+    """Drop the shared collector (use between tests)."""
+    global _default_collector
+    _default_collector = None
+
+
+def get_metrics(task_class: str, collector: Optional[MetricsCollector] = None) -> dict:
+    """Summary SLIs for ``task_class`` from ``collector`` (default: shared collector)."""
+    return (collector or get_default_collector()).get_summary(task_class)
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +74,9 @@ logger = logging.getLogger(__name__)
 def monitor_agent(
     agent_id:   str,
     task_class: str,
-    collector:  MetricsCollector,
+    collector:  Optional[MetricsCollector] = None,
     *,
+    config:     Optional[MonitorConfig] = None,
     verbose:    bool = False,
 ) -> Callable:
     """
@@ -63,7 +86,9 @@ def monitor_agent(
     ----------
     agent_id   : Unique identifier for this agent instance.
     task_class : Task category label (e.g. "payments", "alert_triage").
-    collector  : MetricsCollector instance to record into.
+    collector  : MetricsCollector to record into. Defaults to a shared
+                 process-wide collector (see ``get_metrics``).
+    config     : Optional MonitorConfig; ``verbose`` is honoured.
     verbose    : Log SLI summary after each execution.
 
     The decorated function must return a dict (standard LangChain pattern).
@@ -72,6 +97,10 @@ def monitor_agent(
     """
 
     def decorator(func: Callable) -> Callable:
+        nonlocal collector, verbose
+        collector = collector if collector is not None else get_default_collector()
+        verbose = verbose or bool(config and config.verbose)
+
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             start = time.perf_counter()
@@ -122,8 +151,9 @@ def monitor_agent(
 def async_monitor_agent(
     agent_id:   str,
     task_class: str,
-    collector:  MetricsCollector,
+    collector:  Optional[MetricsCollector] = None,
     *,
+    config:     Optional[MonitorConfig] = None,
     verbose:    bool = False,
 ) -> Callable:
     """
@@ -135,6 +165,10 @@ def async_monitor_agent(
     """
 
     def decorator(func: Callable) -> Callable:
+        nonlocal collector, verbose
+        collector = collector if collector is not None else get_default_collector()
+        verbose = verbose or bool(config and config.verbose)
+
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             start = time.perf_counter()
