@@ -190,6 +190,10 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
 
+## Use with AI coding agents
+
+An agent skill that teaches coding agents how to use this library is in [`skills/agentsre-langchain/SKILL.md`](skills/agentsre-langchain/SKILL.md).
+
 ## License
 
 MIT © [Ajay Devineni](https://linkedin.com/in/ajay-devineni)
