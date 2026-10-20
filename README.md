@@ -33,6 +33,15 @@ Track the four semantic SLIs that matter:
 
 ---
 
+
+## Architecture
+
+![agentsre-langchain architecture](docs/assets/architecture.svg)
+
+The decorator records each run into a `MetricsCollector`. `get_metrics()` reads that collector.
+Pass your own collector in tests. Optionally forward a `TaskRecord` into [agentsre](https://github.com/Ajay150313/agentsre).
+`DuplicateToolCallGuard` stops a timeout-retry from invoking the same tool twice.
+
 ## Install
 
 ```bash
